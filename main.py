@@ -7,8 +7,12 @@ import uuid
 from datetime import datetime
 import json
 import re
+import os
 
 app = FastAPI(title="Bot Deployment API", version="1.0.0")
+
+# Get base URL from environment or use default
+BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
 
 # CORS middleware
 app.add_middleware(
@@ -167,7 +171,7 @@ def generate_llm_html(config: Dict) -> str:
     <script>
         const messagesContainer = document.getElementById('messages');
         const messageInput = document.getElementById('messageInput');
-        const API_ENDPOINT = '{config.get('apiEndpoint', 'http://localhost:8000/api/chat')}';
+        const API_ENDPOINT = '{config.get('apiEndpoint', BASE_URL + '/api/chat')}';
         const BOTNAME = '{config.get('botname', 'default')}';
 
         function addMessage(content, isUser = false) {{
@@ -376,7 +380,7 @@ def generate_logs_html(config: Dict) -> str:
     </div>
 
     <script>
-        const API_ENDPOINT = '{config.get('apiEndpoint', 'http://localhost:8000/api/logs')}';
+        const API_ENDPOINT = '{config.get('apiEndpoint', BASE_URL + '/api/logs')}';
         const BOTNAME = '{config.get('botname', 'default')}';
         const REFRESH_INTERVAL = {config.get('refreshInterval', 3000)};
         
@@ -444,6 +448,54 @@ def generate_logs_html(config: Dict) -> str:
 
 # API Routes
 
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    """Main landing page"""
+    return HTMLResponse("""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Bot Deployment Platform</title>
+        <style>
+            body { font-family: Arial, sans-serif; max-width: 800px; margin: 2rem auto; padding: 2rem; }
+            .header { text-align: center; margin-bottom: 2rem; }
+            .api-section { background: #f5f5f5; padding: 1.5rem; border-radius: 8px; margin: 1rem 0; }
+            code { background: #e0e0e0; padding: 0.2rem 0.4rem; border-radius: 4px; }
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <h1>🤖 Bot Deployment Platform</h1>
+            <p>Create and deploy bot frontends instantly!</p>
+        </div>
+        
+        <div class="api-section">
+            <h2>🚀 Quick Start</h2>
+            <p>Create a chat bot:</p>
+            <code>POST /api/create</code>
+            <pre>{
+  "botname": "my-bot",
+  "frontendType": "LLM",
+  "config": {
+    "title": "My AI Assistant",
+    "primaryColor": "#007bff"
+  }
+}</pre>
+        </div>
+        
+        <div class="api-section">
+            <h2>📚 API Documentation</h2>
+            <p><a href="/docs">View Interactive API Docs</a></p>
+        </div>
+        
+        <div class="api-section">
+            <h2>📊 All Deployments</h2>
+            <p><a href="/api/deployments">View All Deployed Bots</a></p>
+        </div>
+    </body>
+    </html>
+    """)
+
 @app.post("/api/create")
 async def create_bot(request: CreateBotRequest):
     """Create a new bot frontend"""
@@ -454,7 +506,7 @@ async def create_bot(request: CreateBotRequest):
         if subdomain in deployments:
             return {
                 "error": "Botname already exists",
-                "existing_url": f"https://{subdomain}.codette.app"
+                "existing_url": f"{BASE_URL}/bot/{subdomain}"
             }
         
         # Generate HTML based on frontend type
@@ -487,7 +539,7 @@ async def create_bot(request: CreateBotRequest):
         
         return {
             "success": True,
-            "url": f"https://{subdomain}.codette.app",
+            "url": f"{BASE_URL}/bot/{subdomain}",
             "botname": request.botname,
             "frontendType": request.frontendType,
             "status": "deployed"
@@ -500,7 +552,7 @@ async def create_bot(request: CreateBotRequest):
 async def serve_bot_frontend(subdomain: str):
     """Serve bot frontend HTML"""
     if subdomain not in deployments:
-        raise HTTPException(status_code=404, detail="Bot not found")
+        raise HTTPException(status_code=404, detail=f"Bot '{subdomain}' not found")
     
     deployment = deployments[subdomain]
     return HTMLResponse(content=deployment["html"])
@@ -531,66 +583,34 @@ async def list_deployments():
             "frontendType": d["frontendType"],
             "status": d["status"],
             "created": d["created"],
-            "local_url": f"http://localhost:8000/bot/{d['subdomain']}"
+            "url": f"{BASE_URL}/bot/{d['subdomain']}"
         }
-        
-        # Add live URLs if they exist
-        if d.get("render_url"):
-            deployment_info["live_url"] = d["render_url"]
-        if d.get("repo_url"):
-            deployment_info["repo_url"] = d["repo_url"]
-        if d.get("dashboard_url"):
-            deployment_info["dashboard_url"] = d["dashboard_url"]
-            
         all_deployments.append(deployment_info)
     
     return {"deployments": all_deployments}
 
 @app.delete("/api/delete/{subdomain}")
 async def delete_deployment(subdomain: str):
-    """Delete deployment from both local storage and Render"""
+    """Delete deployment"""
     if subdomain not in deployments:
         raise HTTPException(status_code=404, detail="Deployment not found")
     
     deployment = deployments[subdomain]
-    
-    # Delete from Render if it exists there
-    service_id = deployment.get("render_service_id")
-    render_deleted = False
-    
-    if service_id and not deployment.get("local_only", False):
-        headers = {
-            "Authorization": f"Bearer {RENDER_API_KEY}",
-        }
-        
-        async with httpx.AsyncClient() as client:
-            try:
-                response = await client.delete(
-                    f"{RENDER_API_BASE}/services/{service_id}",
-                    headers=headers
-                )
-                render_deleted = response.status_code in [200, 204]
-            except Exception as e:
-                print(f"Failed to delete from Render: {str(e)}")
-    
-    # Delete from local storage
     del deployments[subdomain]
     
     return {
         "success": True,
-        "message": "Deployment deleted locally",
-        "render_deleted": render_deleted,
-        "repo_note": "GitHub repository still exists - delete manually if needed"
+        "message": f"Bot '{deployment['botname']}' deleted successfully"
     }
 
 @app.post("/api/chat")
 async def handle_chat(request: ChatRequest):
-    """Example chat endpoint (replace with your AI logic)"""
+    """Handle chat messages (replace with your AI logic)"""
     # Log the conversation
     log_entry = {
         "timestamp": datetime.now().isoformat(),
         "level": "info",
-        "message": f"User message: {request.userMessage}",
+        "message": f"User: {request.userMessage}",
         "botname": request.botname
     }
     
@@ -598,14 +618,22 @@ async def handle_chat(request: ChatRequest):
         logs[request.botname] = []
     logs[request.botname].append(log_entry)
     
-    # Simple echo response (replace with your AI logic)
-    bot_response = f"Echo: {request.userMessage}"
+    # Simple echo response (REPLACE THIS with your AI logic)
+    bot_response = f"You said: {request.userMessage}"
+    
+    # Add some variety to responses
+    if "hello" in request.userMessage.lower():
+        bot_response = "Hello! Nice to meet you! 👋"
+    elif "how are you" in request.userMessage.lower():
+        bot_response = "I'm doing great! Thanks for asking. How can I help you today?"
+    elif "help" in request.userMessage.lower():
+        bot_response = "I'm here to help! Ask me anything and I'll do my best to assist you."
     
     # Log the response
     logs[request.botname].append({
         "timestamp": datetime.now().isoformat(),
         "level": "success",
-        "message": f"Bot response: {bot_response}",
+        "message": f"Bot: {bot_response}",
         "botname": request.botname
     })
     
@@ -637,6 +665,7 @@ async def health_check():
     return {
         "status": "healthy",
         "deployments": len(deployments),
+        "base_url": BASE_URL,
         "timestamp": datetime.now().isoformat()
     }
 
